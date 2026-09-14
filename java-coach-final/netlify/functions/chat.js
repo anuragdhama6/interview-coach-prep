@@ -8,107 +8,71 @@ exports.handler = async (event) => {
   };
 
   if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers, body: "" };
+    return { statusCode: 200, headers, body: JSON.stringify({ ok: true }) };
   }
 
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, headers, body: JSON.stringify({ error: "Method not allowed" }) };
   }
 
-  // Check API key exists
   if (!process.env.GROQ_API_KEY) {
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ error: "GROQ_API_KEY not set in environment variables" }),
-    };
+    return { statusCode: 500, headers, body: JSON.stringify({ error: "GROQ_API_KEY not configured in Netlify environment variables" }) };
   }
 
-  let messages, system;
+  let messages = [], system = "";
   try {
-    const body = JSON.parse(event.body);
-    messages = body.messages || [];
-    system   = body.system   || "";
+    const b = JSON.parse(event.body || "{}");
+    messages = (b.messages || []).slice(-10);
+    system = b.system || "";
   } catch (e) {
-    return {
-      statusCode: 400,
-      headers,
-      body: JSON.stringify({ error: "Invalid request body" }),
-    };
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "Bad request body" }) };
   }
-
-  // Keep last 20 messages to avoid token limits
-  const trimmed = messages.slice(-20);
 
   const payload = JSON.stringify({
-    model: "llama-3.1-70b-versatile",
-    max_tokens: 1024,
+    model: "llama3-70b-8192",
+    max_tokens: 800,
     temperature: 0.7,
-    messages: [
-      { role: "system", content: system },
-      ...trimmed,
-    ],
+    messages: [{ role: "system", content: system }, ...messages],
   });
 
-  try {
-    const reply = await new Promise((resolve, reject) => {
-      const options = {
-        hostname: "api.groq.com",
-        path: "/openai/v1/chat/completions",
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-          "Content-Length": Buffer.byteLength(payload),
-        },
-      };
-
-      const req = https.request(options, (res) => {
-        let raw = "";
-        res.on("data", (chunk) => { raw += chunk; });
-        res.on("end", () => {
-          if (!raw || raw.trim() === "") {
-            return reject(new Error("Empty response from Groq"));
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: "api.groq.com",
+      path: "/openai/v1/chat/completions",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + process.env.GROQ_API_KEY,
+        "Content-Length": Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      let raw = "";
+      res.on("data", (c) => { raw += c; });
+      res.on("end", () => {
+        try {
+          const data = JSON.parse(raw);
+          if (data.error) {
+            resolve({ statusCode: 200, headers, body: JSON.stringify({ error: data.error.message || "Groq API error" }) });
+          } else {
+            const reply = data.choices?.[0]?.message?.content || "No response from AI";
+            resolve({ statusCode: 200, headers, body: JSON.stringify({ reply }) });
           }
-          let parsed;
-          try {
-            parsed = JSON.parse(raw);
-          } catch (e) {
-            return reject(new Error("Invalid JSON from Groq: " + raw.slice(0, 100)));
-          }
-          if (parsed.error) {
-            return reject(new Error(parsed.error.message || JSON.stringify(parsed.error)));
-          }
-          const content = parsed.choices?.[0]?.message?.content;
-          if (!content) {
-            return reject(new Error("No content in Groq response: " + JSON.stringify(parsed).slice(0, 200)));
-          }
-          resolve(content);
-        });
+        } catch (e) {
+          resolve({ statusCode: 200, headers, body: JSON.stringify({ error: "Groq parse error: " + raw.substring(0, 200) }) });
+        }
       });
-
-      req.on("error", (e) => reject(new Error("Network error: " + e.message)));
-      req.setTimeout(25000, () => {
-        req.destroy();
-        reject(new Error("Request timed out after 25s"));
-      });
-
-      req.write(payload);
-      req.end();
     });
 
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({ reply }),
-    };
+    req.on("error", (e) => {
+      resolve({ statusCode: 200, headers, body: JSON.stringify({ error: "Network error: " + e.message }) });
+    });
 
-  } catch (err) {
-    console.error("chat.js error:", err.message);
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ error: err.message }),
-    };
-  }
+    req.setTimeout(25000, () => {
+      req.destroy();
+      resolve({ statusCode: 200, headers, body: JSON.stringify({ error: "Request timed out" }) });
+    });
+
+    req.write(payload);
+    req.end();
+  });
 };
