@@ -29,7 +29,7 @@ exports.handler = async (event) => {
   }
 
   const payload = JSON.stringify({
-    model: "llama-3.3-70b-versatile",
+    model: "llama-4-scout-instruct",
     max_tokens: 800,
     temperature: 0.7,
     messages: [{ role: "system", content: system }, ...messages],
