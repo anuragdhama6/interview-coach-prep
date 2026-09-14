@@ -29,7 +29,7 @@ exports.handler = async (event) => {
   }
 
   const payload = JSON.stringify({
-    model: "llama-4-scout-instruct",
+    model: "openai/gpt-oss-20b",
     max_tokens: 800,
     temperature: 0.7,
     messages: [{ role: "system", content: system }, ...messages],
